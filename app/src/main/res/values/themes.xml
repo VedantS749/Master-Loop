@@ -1,0 +1,9 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.Loop" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/loop_ink</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
+    </style>
+    <style name="Theme.Loop.Splash" parent="Theme.Loop" />
+</resources>
