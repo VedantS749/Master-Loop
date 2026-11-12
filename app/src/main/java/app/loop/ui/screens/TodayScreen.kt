@@ -135,6 +135,7 @@ fun TodayScreen(vm: AppViewModel, dash: Dashboard) {
             item { HeroCard(vm, dash) }
             // Right under the rings, where it is seen every morning, but slim enough not to crowd them.
             item { MoodQuickCard(vm, dash) }
+            if (latest?.noSleep == true) item { NoSleepCard(vm, latest.day) }
 
             item {
                 val why = androidx.compose.runtime.remember(dash.days, dash.settings) { app.loop.analytics.WhyTodays.build(dash.days, dash.settings) }

@@ -324,7 +324,10 @@ class Graph(private val app: Application) : HistorySink {
         if (s.mode == DataMode.DEMO) { _analysis.value = "Strap history is saved. It will be scored when you switch to your own data."; return }
         val recs = history.readSince(System.currentTimeMillis() / 1000 - 21L * 86400)
         if (recs.isEmpty()) { _analysis.value = "No strap history on this phone yet."; return }
-        val out = StrapAnalyzer.analyze(recs, s, store.data.value.days.takeLast(14).mapNotNull { it.rhr }.takeIf { it.isNotEmpty() }?.average())
+        val out = StrapAnalyzer.analyze(
+            recs, s, store.data.value.days.takeLast(14).mapNotNull { it.rhr }.takeIf { it.isNotEmpty() }?.average(),
+            manualSleep = store.data.value.manualSleep.map { StrapAnalyzer.ManualSleepSpan(it.first, it.second) },
+        )
         if (out.days.isEmpty() && out.workouts.isEmpty()) { _analysis.value = "Downloaded ${plural(recs.size, "record")}, but not enough wear time to score yet."; return }
         if (s.mode == DataMode.NONE) settings.update { it.copy(mode = DataMode.REAL) }
         store.update(DataMode.REAL) { WhoopImporter.merge(it, WhoopImporter.Result(out.days, out.workouts, emptyList(), null)) }

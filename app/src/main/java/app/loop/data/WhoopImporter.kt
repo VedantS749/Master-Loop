@@ -128,7 +128,7 @@ object WhoopImporter {
                 awakeMin = n.awakeMin ?: o.awakeMin, sleepPerf = n.sleepPerf ?: o.sleepPerf,
                 sleepConsistency = n.sleepConsistency ?: o.sleepConsistency, kcal = n.kcal ?: o.kcal, steps = n.steps ?: o.steps,
                 weightKg = n.weightKg ?: o.weightKg, recoveryRaw = n.recoveryRaw ?: o.recoveryRaw, strainRaw = n.strainRaw ?: o.strainRaw,
-                wearMin = n.wearMin ?: o.wearMin, skinIdx = n.skinIdx ?: o.skinIdx, hrr = n.hrr ?: o.hrr, trimp = n.trimp ?: o.trimp,
+                wearMin = n.wearMin ?: o.wearMin, skinIdx = n.skinIdx ?: o.skinIdx, hrr = n.hrr ?: o.hrr, trimp = n.trimp ?: o.trimp, napMin = n.napMin ?: o.napMin, noSleep = n.noSleep ?: o.noSleep,
                 rhythmIrreg = n.rhythmIrreg ?: o.rhythmIrreg, dayStress = n.dayStress ?: o.dayStress, stressHighMin = n.stressHighMin ?: o.stressHighMin,
                 dtHr = n.dtHr ?: o.dtHr, dtHrLow = n.dtHrLow ?: o.dtHrLow, dtHrv = n.dtHrv ?: o.dtHrv, dtSdnn = n.dtSdnn ?: o.dtSdnn,
                 dtBreath = n.dtBreath ?: o.dtBreath, dtStress = n.dtStress ?: o.dtStress, dtCoherence = n.dtCoherence ?: o.dtCoherence,

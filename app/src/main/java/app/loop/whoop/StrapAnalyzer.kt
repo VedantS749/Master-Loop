@@ -27,13 +27,19 @@ import kotlin.math.sqrt
  * from heart rate, heart-rate variability and wrist movement. It is not polysomnography.
  */
 object StrapAnalyzer {
-    class Output(val days: List<DayRecord>, val workouts: List<Workout>, val nights: Int, val observedMaxHr: Int = 0)
+    class Output(val days: List<DayRecord>, val workouts: List<Workout>, val nights: Int, val observedMaxHr: Int = 0, val relaxedNights: List<String> = emptyList())
+
+    /** A sleep the person entered themselves, as epoch seconds. It overrides detection for that night. */
+    class ManualSleepSpan(val startSec: Long, val endSec: Long)
 
     private class Minute(val min: Long, val hr: Double, val motion: Double, val rr: List<Int>, val skin: Double?, val skinRaw: Double? = null)
 
     private const val MIN_SAMPLES = 5
 
-    fun analyze(records: List<HistRecord>, s: Settings, restingFallback: Double?, zone: ZoneId = ZoneId.systemDefault()): Output {
+    fun analyze(
+        records: List<HistRecord>, s: Settings, restingFallback: Double?, zone: ZoneId = ZoneId.systemDefault(),
+        manualSleep: List<ManualSleepSpan> = emptyList(),
+    ): Output {
         if (records.isEmpty()) return Output(emptyList(), emptyList(), 0)
         val minutes = buildMinutes(records)
         if (minutes.isEmpty()) return Output(emptyList(), emptyList(), 0)
@@ -44,32 +50,40 @@ object StrapAnalyzer {
         val days = HashMap<String, DayRecord>()
         fun upd(day: String, f: (DayRecord) -> DayRecord) { days[day] = f(days[day] ?: DayRecord(day)) }
 
-        // ---- sleep: one night per 18:00 -> 14:00 window ----
-        val windows = minutes.groupBy { m ->
-            val shifted = Instant.ofEpochSecond(m.min * 60).atZone(zone).minusHours(14) // 14:00 -> 00:00 of the wake date's "previous" day boundary
-            shifted.toLocalDate().plusDays(1) // wake date
-        }
+        // ---- sleep: found anywhere on the timeline, so a night, a daytime sleep after a sleepless night and naps all count ----
         class Night(val wake: LocalDate, val startMin: Long, val endMin: Long, val rhr: Double?, val skin: Double?, val skinRaw: Double?)
         val nights = ArrayList<Night>()
         val sleepRanges = ArrayList<LongRange>()
-        for ((wake, ms) in windows.toSortedMap()) {
-            val inWindow = ms.filter { val md = localMinuteOfDay(it.min); md >= 18 * 60 || md < 14 * 60 }
-            if (inWindow.size < 240) continue
-            val res = detectNight(inWindow) ?: continue
-            sleepRanges += res.startMin..res.endMin
-            nights += Night(wake, res.startMin, res.endMin, res.rhr, res.skin, res.skinRaw)
-            upd(wake.toString()) {
-                it.copy(
-                    hrv = res.hrv, rhr = res.rhr, resp = res.resp, rhythmIrreg = res.irregPct, sleepMin = res.asleepMin, sleepEff = res.efficiency,
-                    deepMin = res.deepMin, remMin = res.remMin, lightMin = res.lightMin, awakeMin = res.awakeMin,
-                )
+        val scan = scanSleep(minutes, zone, manualSleep)
+        scan.found.forEach { sleepRanges += it.block.startMin..it.block.endMin }
+        val napMinutes = HashMap<LocalDate, Double>()
+        val mainDays = HashSet<LocalDate>()
+        for ((wake, fs) in scan.found.groupBy { localDate(it.block.endMin) }) {
+            val mains = fs.filter { it.sleep != null }.sortedByDescending { it.block.count }
+            val main = mains.firstOrNull()
+            if (main != null) {
+                val res = main.sleep!!
+                mainDays += wake
+                nights += Night(wake, res.startMin, res.endMin, res.rhr, res.skin, res.skinRaw)
+                upd(wake.toString()) {
+                    it.copy(
+                        hrv = res.hrv, rhr = res.rhr, resp = res.resp, rhythmIrreg = res.irregPct, sleepMin = res.asleepMin, sleepEff = res.efficiency,
+                        deepMin = res.deepMin, remMin = res.remMin, lightMin = res.lightMin, awakeMin = res.awakeMin, noSleep = false,
+                    )
+                }
             }
+            // everything else that day (short naps, a second sleep) is counted as napping
+            val naps = fs.filter { it !== main }.sumOf { it.block.count.toDouble() }
+            if (naps > 0) napMinutes[wake] = naps
         }
+        for ((d, n) in napMinutes) upd(d.toString()) { it.copy(napMin = n) }
+        // A day the strap was worn through the small hours, still moving, with no sleep found, is a sleepless night.
+        for (d in scan.awakeNights) if (d !in mainDays) upd(d.toString()) { it.copy(noSleep = true) }
         // skin temperature as deviation from the previous nights' median
         val skins = nights.mapNotNull { n -> n.skin?.let { n.wake to it } }
         for ((i, p) in skins.withIndex()) {
             val prev = skins.subList(max(0, i - 14), i).map { it.second }
-            if (prev.size >= 3) upd(p.first.toString()) { it.copy(skinTempDev = p.second - (Stats.median(prev) ?: p.second)) }
+            if (prev.size >= 2) upd(p.first.toString()) { it.copy(skinTempDev = p.second - (Stats.median(prev) ?: p.second)) }
         }
 
         // WHOOP 4.0 only supplies an uncalibrated sensor value, so report a relative shift in standard deviations.
@@ -122,7 +136,7 @@ object StrapAnalyzer {
             }
             if (drops.isNotEmpty()) upd(date.toString()) { it.copy(hrr = drops.max()) }
         }
-        return Output(days.values.sortedBy { it.day }, workouts, nights.size, observedMax)
+        return Output(days.values.sortedBy { it.day }, workouts, nights.size, observedMax, scan.relaxed)
     }
 
     // ------------------------------------------------------------------ minutes
@@ -157,35 +171,134 @@ object StrapAnalyzer {
         val irregPct: Double? = null,
     )
 
+    private const val MOTION_FLOOR = 0.012
+    private const val MOTION_CAP = 0.06
+    private const val MAIN_SPAN = 180
+    private const val MAIN_COUNT = 150
+    private const val NAP_SPAN = 20
+    private const val NAP_COUNT = 20
+
+    private fun medianOf(v: List<Double>): Double = v.sorted()[v.size / 2]
+
     private fun percentile(v: List<Double>, p: Double): Double {
         val s = v.sorted(); return s[((s.size - 1) * p).roundToInt().coerceIn(0, s.size - 1)]
     }
 
-    private fun detectNight(ms: List<Minute>): Sleep? {
-        val motionThr = percentile(ms.map { it.motion }, 0.30)
-        val hrThr = percentile(ms.map { it.hr }, 0.55)
-        val byMin = ms.associateBy { it.min }
-        val first = ms.first().min; val last = ms.last().min
-        // candidate: smoothed (+-4 min) movement and heart rate are both low
-        val cand = HashSet<Long>()
-        for (m in ms) {
-            var mo = 0.0; var hr = 0.0; var n = 0
-            for (d in -4..4) byMin[m.min + d]?.let { mo += it.motion; hr += it.hr; n++ }
-            if (n >= 4 && mo / n <= max(motionThr, 0.002) && hr / n <= hrThr) cand += m.min
-        }
-        if (cand.size < 150) return null
-        // merge candidate minutes into blocks, bridging wake bouts of up to 15 minutes
-        val sorted = cand.sorted()
-        var bs = sorted[0]; var be = sorted[0]
-        var bestS = 0L; var bestE = -1L; var bestCount = 0
-        var count = 1
-        fun close() { if (be - bs + 1 >= 180 && count > bestCount) { bestS = bs; bestE = be; bestCount = count } }
-        for (k in 1 until sorted.size) {
-            if (sorted[k] - be <= 15) { be = sorted[k]; count++ } else { close(); bs = sorted[k]; be = sorted[k]; count = 1 }
-        }
-        close()
-        if (bestE < 0 || bestCount < 150) return null
+    /** A stretch of sleep: [count] is the number of minutes in it that look asleep (the rest are brief wake bouts). */
+    private class Block(val startMin: Long, val endMin: Long, val count: Int)
+    private class Found(val block: Block, val sleep: Sleep?)
+    private class Scan(val found: List<Found>, val awakeNights: Set<LocalDate>, val relaxed: List<String>)
 
+    /**
+     * Finds every sleep on the whole timeline, not just one per fixed window. A minute counts as asleep when its smoothed
+     * movement and heart rate are both low. Heart rate is judged against the wearer's own surrounding day, and movement
+     * against their own motion but never below the sensor's resting noise, so very still sleepers are found. Long blocks
+     * (3 hours or more) are full sleeps with staging; shorter ones are naps. A night that is missed gets a second look
+     * with looser limits before it is called empty, and a sleep entered by hand always wins.
+     */
+    private fun scanSleep(minutes: List<Minute>, zone: ZoneId, manual: List<ManualSleepSpan>): Scan {
+        if (minutes.size < 60) return Scan(emptyList(), emptySet(), emptyList())
+        fun date(min: Long) = Instant.ofEpochSecond(min * 60).atZone(zone).toLocalDate()
+        fun mod(min: Long) = Instant.ofEpochSecond(min * 60).atZone(zone).let { it.hour * 60 + it.minute }
+        val byMin = minutes.associateBy { it.min }
+        val smoothMo = HashMap<Long, Double>(); val smoothHr = HashMap<Long, Double>()
+        for (m in minutes) {
+            val mo = ArrayList<Double>(9); val hr = ArrayList<Double>(9)
+            // The middle value of nine minutes, not the average: one turn in bed should not break up the night.
+            for (d in -4..4) byMin[m.min + d]?.let { mo += it.motion; hr += it.hr }
+            if (mo.size >= 4) { smoothMo[m.min] = medianOf(mo); smoothHr[m.min] = medianOf(hr) }
+        }
+        val motionThr = percentile(minutes.map { it.motion }, 0.30).coerceIn(MOTION_FLOOR, MOTION_CAP)
+        val first = minutes.first().min; val last = minutes.last().min
+        val step = 360L
+        val anchor0 = (first / step) * step
+        fun refs(pct: Double): DoubleArray = DoubleArray(((last - anchor0) / step + 1).toInt()) { i ->
+            val a = anchor0 + i * step
+            val hrs = minutes.filter { it.min in (a - 720)..(a + 720) }.map { it.hr }
+            if (hrs.isEmpty()) 200.0 else percentile(hrs, pct)
+        }
+        val ref55 = refs(0.55)
+        fun hrRef(r: DoubleArray, m: Long) = r[(((m - anchor0) + step / 2) / step).toInt().coerceIn(0, r.size - 1)]
+
+        fun candidates(from: Long, to: Long, moThr: Double, r: DoubleArray): List<Long> =
+            minutes.asSequence().map { it.min }.filter { it in from..to }.filter { m ->
+                val mo = smoothMo[m]; val hr = smoothHr[m]
+                mo != null && hr != null && mo <= moThr && hr <= hrRef(r, m)
+            }.toList()
+
+        fun blocks(cand: List<Long>, gap: Long): List<Block> {
+            if (cand.isEmpty()) return emptyList()
+            val out = ArrayList<Block>(); var bs = cand[0]; var be = cand[0]; var n = 1
+            for (k in 1 until cand.size) { if (cand[k] - be <= gap) { be = cand[k]; n++ } else { out += Block(bs, be, n); bs = cand[k]; be = cand[k]; n = 1 } }
+            out += Block(bs, be, n); return out
+        }
+        fun isMain(b: Block) = b.endMin - b.startMin + 1 >= MAIN_SPAN && b.count >= MAIN_COUNT
+
+        val allCand = candidates(first, last, motionThr, ref55)
+        val candSet = allCand.toHashSet()
+        val raw = blocks(allCand, 15)
+        val mains = raw.filter(::isMain).toMutableList()
+        val relaxed = ArrayList<String>()
+
+        // ---- a night that was missed gets a second look with looser limits, if the strap saw a clear heart-rate dip ----
+        val hrAll = minutes.map { it.hr }
+        val lowHr = percentile(hrAll, 0.25) + 4
+        val ref70 = refs(0.70)
+        val days = minutes.map { date(it.min) }.distinct().sorted()
+        val covered = HashSet<LocalDate>()
+        for (d in days.drop(1)) {
+            if (mains.any { date(it.endMin) == d }) continue
+            val from = d.minusDays(1).atTime(18, 0).atZone(zone).toEpochSecond() / 60
+            val to = d.atTime(14, 0).atZone(zone).toEpochSecond() / 60
+            val dip = minutes.count { it.min in from..to && (smoothHr[it.min] ?: 999.0) <= lowHr && (smoothMo[it.min] ?: 9.0) <= 0.03 }
+            if (dip < 240) continue
+            val c2 = candidates(from, to, min(motionThr * 2, 0.05), ref70)
+            val best = blocks(c2, 25).filter(::isMain).maxByOrNull { it.count } ?: continue
+            mains += best; relaxed += d.toString(); covered += d
+        }
+
+        // ---- manual entries override anything detected over the same hours ----
+        val manualBlocks = manual.map { Block(it.startSec / 60, it.endSec / 60, ((it.endSec - it.startSec) / 60 * 0.92).toInt()) }.filter { it.endMin > it.startMin }
+        fun overlaps(a: Block, b: Block) = a.startMin <= b.endMin && b.startMin <= a.endMin
+        mains.removeAll { m -> manualBlocks.any { overlaps(m, it) } }
+        mains += manualBlocks
+
+        // ---- naps: shorter, very still, and clearly below the heart rate of the surrounding hours ----
+        val mainHr = mains.mapNotNull { b -> (b.startMin..b.endMin).mapNotNull { byMin[it]?.hr }.takeIf { it.isNotEmpty() }?.average() }
+        val sleepRef = mainHr.takeIf { it.isNotEmpty() }?.let { Stats.median(it) }
+        val naps = raw.filter { b -> !isMain(b) && b.endMin - b.startMin + 1 >= NAP_SPAN && b.count >= NAP_COUNT && mains.none { overlaps(it, b) } }.filter { b ->
+            val mo = (b.startMin..b.endMin).mapNotNull { smoothMo[it] }
+            val hr = (b.startMin..b.endMin).mapNotNull { byMin[it]?.hr }
+            mo.isNotEmpty() && hr.isNotEmpty() && medianOf(mo) <= 0.006 && hr.average() <= (sleepRef?.plus(12) ?: (hrRef(ref55, b.startMin) - 5))
+        }
+
+        val found = ArrayList<Found>()
+        for (b in mains) {
+            val man = manualBlocks.any { it === b }
+            val cand = if (man) (b.startMin..b.endMin).toHashSet() else candSet
+            val res = describeSleep(byMin, cand, b.startMin, b.endMin, b.count)
+            // a block too sparse to describe is still sleep: count it as a nap rather than losing it
+            found += Found(b, res)
+        }
+        naps.forEach { found += Found(it, null) }
+
+        // ---- sleepless nights: worn and still moving through the small hours (01:00 to 06:00) with no sleep found ----
+        val sleepDays = found.filter { it.sleep != null }.map { date(it.block.endMin) }.toSet()
+        val medHr = percentile(hrAll, 0.40)
+        val awakeNights = HashSet<LocalDate>()
+        for (d in days.drop(1)) {
+            if (d in sleepDays) continue
+            val small = minutes.filter { date(it.min) == d && mod(it.min) in 60..359 }
+            val cov = small.filter { smoothMo[it.min] != null }
+            if (cov.size < 180) continue
+            val moving = cov.count { (smoothMo[it.min] ?: 0.0) > MOTION_FLOOR }
+            if (moving >= 0.6 * cov.size && medianOf(cov.map { smoothHr[it.min]!! }) >= medHr) awakeNights += d
+        }
+        return Scan(found, awakeNights, relaxed)
+    }
+
+    /** Stages, HRV, resting heart rate, breathing and skin temperature for one long sleep. Null when it is too sparse to describe. */
+    private fun describeSleep(byMin: Map<Long, Minute>, cand: Set<Long>, bestS: Long, bestE: Long, bestCount: Int): Sleep? {
         val inBed = bestE - bestS + 1
         val asleep = bestCount.toDouble()
         val awake = inBed - asleep
@@ -379,15 +492,8 @@ object StrapAnalyzer {
         return ws.map { w -> StressWindow(w.start, stressScore(w.hr, kotlin.math.exp(w.ln), n)) }
     }
 
-    private fun sleepRangesOf(minutes: List<Minute>, zone: ZoneId): List<LongRange> {
-        val out = ArrayList<LongRange>()
-        val windows = minutes.groupBy { m -> Instant.ofEpochSecond(m.min * 60).atZone(zone).minusHours(14).toLocalDate().plusDays(1) }
-        for ((_, ms) in windows) {
-            val inW = ms.filter { val md = Instant.ofEpochSecond(it.min * 60).atZone(zone).let { z -> z.hour * 60 + z.minute }; md >= 18 * 60 || md < 14 * 60 }
-            if (inW.size >= 240) detectNight(inW)?.let { out += it.startMin..it.endMin }
-        }
-        return out
-    }
+    private fun sleepRangesOf(minutes: List<Minute>, zone: ZoneId): List<LongRange> =
+        scanSleep(minutes, zone, emptyList()).found.map { it.block.startMin..it.block.endMin }
 
     /** The personal daytime norm from saved history, or null until there is enough still, awake wear time. */
     fun daytimeNorm(records: List<HistRecord>, zone: ZoneId = ZoneId.systemDefault()): DaytimeNorm? {

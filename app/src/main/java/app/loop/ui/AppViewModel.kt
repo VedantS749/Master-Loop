@@ -180,6 +180,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun pairStrap() = monitor.pairStrap()
     fun reanalyse() = viewModelScope.launch(Dispatchers.IO) { graph.analyseHistory() }
 
+    /** The person says when they slept, for a night the strap could not see. Used in place of detection for that span. */
+    fun addManualSleep(startSec: Long, endSec: Long) {
+        if (endSec <= startSec) return
+        mutate { it.copy(manualSleep = it.manualSleep.filterNot { m -> m.first < endSec && startSec < m.second } + (startSec to endSec)) }
+        reanalyse()
+    }
+
     private val _import = MutableStateFlow<ImportUi>(ImportUi.Idle)
     val importState: StateFlow<ImportUi> = _import.asStateFlow()
 

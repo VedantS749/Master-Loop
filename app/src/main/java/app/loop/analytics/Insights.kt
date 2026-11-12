@@ -27,7 +27,7 @@ object Insights {
     const val BASELINE_GOAL = 5
 
     fun brief(days: List<DayRecord>, s: Settings): Brief? {
-        val latest = days.lastOrNull { it.recovery != null || it.sleepScore != null } ?: return null
+        val latest = days.lastOrNull { it.recovery != null || it.sleepScore != null || it.noSleep == true } ?: return null
         val withHrv = days.count { it.hrv != null }
         val rec = latest.recovery
         val drivers = ArrayList<Driver>()
@@ -50,6 +50,7 @@ object Insights {
                 if (d >= 2) false else if (d <= -2) true else null,
             )
         }
+        if (latest.noSleep == true) drivers += Driver(Category.SLEEP, "No sleep was detected overnight", false)
         latest.sleepMin?.let {
             val need = s.sleepNeedMin
             val diff = it - need
@@ -68,6 +69,15 @@ object Insights {
             drivers += Driver(Category.ACTIVITY, "Yesterday was a hard day (strain ${it.roundToInt()})", null)
         }
 
+        if (latest.noSleep == true && rec == null) {
+            val need = s.sleepNeedMin
+            val nap = latest.napMin?.takeIf { it >= 20 }?.let { " You did get about ${Scoring.hm(it)} of naps." }.orEmpty()
+            return Brief(
+                headline = "You went without sleep",
+                sub = "No sleep was found overnight, so recovery can't be scored today.$nap Keep effort light, a 20 to 30 minute nap before mid-afternoon helps, and aim for an early night: your body is about ${Scoring.hm(need.toDouble())} behind.",
+                band = null, target = 5..30, drivers = drivers, learning = null,
+            )
+        }
         if (rec == null) {
             return Brief(
                 headline = "Learning your normal",

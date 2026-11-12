@@ -36,6 +36,8 @@ data class LoopData(
     val cycleStarts: List<String> = emptyList(),
     val strength: List<StrengthSession> = emptyList(),
     val log: app.loop.model.HealthLog = app.loop.model.HealthLog(),
+    /** Sleeps the person entered by hand: start and end as epoch seconds. They override detection. */
+    val manualSleep: List<Pair<Long, Long>> = emptyList(),
 )
 
 /**
@@ -100,7 +102,7 @@ class LoopStore(private val context: Context) {
                         putN("perf", r.sleepPerf); putN("cons", r.sleepConsistency); putN("kcal", r.kcal)
                         putN("steps", r.steps); putN("weight", r.weightKg); putN("rec", r.recoveryRaw); putN("strain", r.strainRaw)
                         putN("dtHr", r.dtHr); putN("dtLow", r.dtHrLow); putN("dtHrv", r.dtHrv); putN("dtSdnn", r.dtSdnn); putN("dtBr", r.dtBreath); putN("dtSt", r.dtStress); putN("dtCo", r.dtCoherence); putN("dtLf", r.dtLfHf); putN("dtKc", r.dtKcal); putN("dtMin", r.dtMin)
-                        putN("wear", r.wearMin); putN("skinIdx", r.skinIdx); putN("hrr", r.hrr); putN("trimp", r.trimp); putN("dstress", r.dayStress); putN("shigh", r.stressHighMin); putN("irr", r.rhythmIrreg)
+                        putN("wear", r.wearMin); putN("skinIdx", r.skinIdx); putN("hrr", r.hrr); putN("trimp", r.trimp); putN("nap", r.napMin); r.noSleep?.let { put("noSleep", it) }; putN("dstress", r.dayStress); putN("shigh", r.stressHighMin); putN("irr", r.rhythmIrreg)
                     })
                 }
             })
@@ -125,6 +127,7 @@ class LoopStore(private val context: Context) {
                 d.journal.forEach { j -> put(JSONObject().apply { put("day", j.day); put("f", JSONArray(j.factors)) }) }
             })
             o.put("cycles", JSONArray(d.cycleStarts))
+            o.put("manualSleep", JSONArray().apply { d.manualSleep.forEach { (a, b) -> put(JSONObject().apply { put("s", a); put("e", b) }) } })
             o.put("log", JSONObject().apply {
                 put("meds", JSONArray().apply { d.log.medicines.forEach { m -> put(JSONObject().apply { put("id", m.id); put("n", m.name); put("d", m.dose); put("s", m.schedule.name); put("st", m.start); m.end?.let { put("en", it) } }) } })
                 put("doses", JSONArray().apply { d.log.doses.forEach { x -> put(JSONObject().apply { put("m", x.medId); put("day", x.day) }) } })
@@ -162,7 +165,7 @@ class LoopStore(private val context: Context) {
                         kcal = j.optN("kcal"), steps = j.optN("steps"), weightKg = j.optN("weight"),
                         recoveryRaw = j.optN("rec"), strainRaw = j.optN("strain"),
                         dtHr = j.optN("dtHr"), dtHrLow = j.optN("dtLow"), dtHrv = j.optN("dtHrv"), dtSdnn = j.optN("dtSdnn"), dtBreath = j.optN("dtBr"), dtStress = j.optN("dtSt"), dtCoherence = j.optN("dtCo"), dtLfHf = j.optN("dtLf"), dtKcal = j.optN("dtKc"), dtMin = j.optN("dtMin"),
-                        wearMin = j.optN("wear"), skinIdx = j.optN("skinIdx"), hrr = j.optN("hrr"), trimp = j.optN("trimp"), dayStress = j.optN("dstress"), stressHighMin = j.optN("shigh"), rhythmIrreg = j.optN("irr"),
+                        wearMin = j.optN("wear"), skinIdx = j.optN("skinIdx"), hrr = j.optN("hrr"), trimp = j.optN("trimp"), napMin = j.optN("nap"), noSleep = if (j.has("noSleep")) j.optBoolean("noSleep") else null, dayStress = j.optN("dstress"), stressHighMin = j.optN("shigh"), rhythmIrreg = j.optN("irr"),
                     )
                 }
             }.orEmpty()
@@ -213,7 +216,8 @@ class LoopStore(private val context: Context) {
                     arr("pain").map { j -> app.loop.model.PainEntry(j.getLong("p"), j.getString("day"), j.getInt("l")) },
                 )
             } ?: app.loop.model.HealthLog()
-            return LoopData(days, workouts, moods, journal, cycles, strength, log)
+            val manual = o.optJSONArray("manualSleep")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).let { j -> j.getLong("s") to j.getLong("e") } } }.orEmpty()
+            return LoopData(days, workouts, moods, journal, cycles, strength, log, manual)
         }
     }
 }

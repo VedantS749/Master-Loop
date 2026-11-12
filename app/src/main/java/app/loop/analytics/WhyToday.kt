@@ -29,7 +29,7 @@ class WhyToday(val factors: List<Factor>, val bottomLine: String?)
  */
 object WhyTodays {
     fun build(days: List<DayRecord>, s: Settings): WhyToday? {
-        val latest = days.lastOrNull { it.recovery != null || it.sleepScore != null || it.hrv != null } ?: return null
+        val latest = days.lastOrNull { it.recovery != null || it.sleepScore != null || it.hrv != null || it.noSleep == true } ?: return null
         val before = days.takeWhile { it.day < latest.day }.takeLast(28)
         val out = ArrayList<Factor>()
 
@@ -53,6 +53,10 @@ object WhyTodays {
                 },
                 if (d >= 1.5) Effect.DRAGGING else if (d <= -1.5) Effect.LIFTING else Effect.STEADY, 0.20 * abs(d) / 3,
             )
+        }
+        if (latest.noSleep == true) {
+            val need = s.sleepNeedMin.toDouble()
+            out += Factor(Category.SLEEP, "Sleep", "None", "No sleep was detected, ${Scoring.hm(need)} short of your need", Effect.DRAGGING, 2.0)
         }
         latest.sleepMin?.let { asleep ->
             val need = s.sleepNeedMin.toDouble()
@@ -85,7 +89,7 @@ object WhyTodays {
         // Show what matters: everything that moves recovery, plus a steady factor only if little else is available.
         val moving = ranked.filter { it.effect != Effect.STEADY }
         val shown = (if (moving.size >= 2) moving else ranked).take(4)
-        return WhyToday(shown, bottomLine(ranked, latest.recovery))
+        return WhyToday(shown, bottomLine(ranked, latest.recovery, latest.noSleep == true))
     }
 
     private fun compare(pct: Double, usual: String): String = when {
@@ -97,7 +101,7 @@ object WhyTodays {
     private fun effectOf(pct: Double, threshold: Double) = if (pct >= threshold) Effect.LIFTING else if (pct <= -threshold) Effect.DRAGGING else Effect.STEADY
 
     /** One sentence on what matters most, without repeating the strain target the day's headline already gives. */
-    private fun bottomLine(ranked: List<Factor>, recovery: Double?): String? {
+    private fun bottomLine(ranked: List<Factor>, recovery: Double?, sleepless: Boolean = false): String? {
         val drags = ranked.filter { it.effect == Effect.DRAGGING }
         val lifts = ranked.filter { it.effect == Effect.LIFTING }
         fun names(f: List<Factor>) = f.take(2).joinToString(" and ") { it.title.lowercase() }
@@ -105,7 +109,7 @@ object WhyTodays {
             drags.isNotEmpty() -> {
                 val top = drags.first()
                 val fix = when (top.title) {
-                    "Sleep" -> "An earlier night is the biggest thing you can do for tomorrow."
+                    "Sleep" -> if (sleepless) "A 20 to 30 minute nap before mid-afternoon and an early night will help most." else "An earlier night is the biggest thing you can do for tomorrow."
                     "Heart-rate variability" -> "Stress, alcohol, illness and late nights often lower it, so think about what changed yesterday."
                     "Resting heart rate" -> "A raised resting heart rate can follow poor sleep, dehydration or a hard day. Rest, water and an early night help."
                     "Yesterday's effort" -> "Keep today lighter and the effect should fade by tomorrow."

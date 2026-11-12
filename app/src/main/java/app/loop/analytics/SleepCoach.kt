@@ -94,7 +94,8 @@ object SleepCoach {
             reasons += "${roundTo15(back)} minutes towards paying back about ${hm(debt.roundToInt())} of sleep debt"
         }
         if (latest?.recovery != null && latest.recovery < 34) { extra += 15; reasons += "15 minutes more because your body is under-recovered" }
-        extra = extra.coerceAtMost(60)
+        if (latest?.noSleep == true) { extra += 45; reasons += "45 minutes more after a night without sleep" }
+        extra = extra.coerceAtMost(if (latest?.noSleep == true) 90 else 60)
         return TonightAdvice(baseMin + extra, baseMin, reasons)
     }
 

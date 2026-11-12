@@ -42,19 +42,24 @@ object Enricher {
                 return if (same.size >= 4) overall.copy(mean = 0.5 * overall.mean + 0.5 * same.average()) else overall
             }
             val hbRaw = Stats.baseline(usable.map { it.hrv })
+            // Night body stress only needs a rough norm, so it starts after two nights rather than five (wider tolerance until then).
+            val hbEarly = hbRaw ?: Stats.baseline(usable.map { it.hrv }, 2, 0.12)
             val hbLn = normal(5, 0.03) { x -> x.hrv?.takeIf { it > 0 }?.let { ln(it) } }
             val rb = normal(5, 0.06) { it.rhr }
+            val rbEarly = rb ?: Stats.baseline(usable.map { it.rhr }, 2, 0.08)
             val pb = normal(5, 0.06) { it.resp }
             val hrv7 = usable.takeLast(7).mapNotNull { x -> x.hrv?.takeIf { it > 0 }?.let { ln(it) } }.takeIf { it.size >= 3 }?.average()
 
             // Sleep debt: shortfall over the last five nights that have sleep data.
-            val recent = (days.subList(max(0, idx - 4), idx + 1)).mapNotNull { it.sleepMin }
-            val debt = if (d.sleepMin == null || recent.isEmpty()) null
+            // A sleepless night counts as zero hours, and naps count towards the day's sleep.
+            fun slept(x: DayRecord): Double? = if (x.sleepMin != null || x.napMin != null) (x.sleepMin ?: 0.0) + (x.napMin ?: 0.0) else if (x.noSleep == true) 0.0 else null
+            val recent = (days.subList(max(0, idx - 4), idx + 1)).mapNotNull(::slept)
+            val debt = if (slept(d) == null || recent.isEmpty()) null
             else (recent.sumOf { s.sleepNeedMin - it }).coerceAtLeast(0.0)
 
             val sleepScore = d.sleepPerf ?: Scoring.sleepScore(d.sleepMin, d.sleepEff, d.deepMin, d.remMin, s.sleepNeedMin)
             val rec = if (d.recoveryRaw != null) null else Scoring.recovery(
-                Scoring.RecoveryInput(d.hrv, d.rhr, d.resp, d.sleepEff, d.skinTempDev, hbLn, rb, pb, d.sleepMin, s.sleepNeedMin, debt, hrv7),
+                Scoring.RecoveryInput(d.hrv, d.rhr, d.resp, d.sleepEff, d.skinTempDev, hbLn, rb, pb, d.sleepMin?.let { it + 0.5 * (d.napMin ?: 0.0) }, s.sleepNeedMin, debt, hrv7),
             )
             val recovery = d.recoveryRaw ?: rec?.score
 
@@ -89,7 +94,7 @@ object Enricher {
                 kcal = kcal,
                 sleepScore = sleepScore,
                 sleepDebtMin = debt,
-                stress = Scoring.stress(d.hrv, d.rhr, hbRaw, rb),
+                stress = Scoring.stress(d.hrv, d.rhr, hbEarly, rbEarly),
                 mood = moodByDay[d.day],
             )
         }

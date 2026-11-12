@@ -66,6 +66,8 @@ data class DayRecord(
     val hrr: Double? = null,            // heart-rate recovery, bpm dropped in the first minute after a hard effort
     val dayStress: Double? = null,      // 0..100 average daytime stress
     val stressHighMin: Double? = null,  // minutes of high daytime stress
+    val napMin: Double? = null,         // minutes of naps and any second sleep that day
+    val noSleep: Boolean? = null,       // true: worn through the night, still moving, no sleep found (an all-nighter); false: slept; null: unknown
     val trimp: Double? = null,          // the strap's all-day training load (Banister TRIMP); strain is worked out from it
     val rhythmIrreg: Double? = null,    // % of the night's 5-minute stretches with irregular beat timing (from R-R beat timing)
     // ----- daytime live log rollups (estimates) -----
@@ -86,7 +88,7 @@ data class DayRecord(
 ) {
     val date: LocalDate get() = LocalDate.parse(day)
     val hasAnything: Boolean
-        get() = listOf(hrv, rhr, resp, sleepMin, kcal, steps, weightKg, recoveryRaw, strainRaw, wearMin, dayStress, dtHr, rhythmIrreg).any { it != null }
+        get() = listOf(hrv, rhr, resp, sleepMin, kcal, steps, weightKg, recoveryRaw, strainRaw, wearMin, dayStress, dtHr, rhythmIrreg, napMin).any { it != null }
 }
 
 data class Workout(

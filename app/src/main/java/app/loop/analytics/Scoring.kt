@@ -85,14 +85,20 @@ object Scoring {
     }
 
     // ---------- Sleep ----------
-    /** 0..100 night score: 50% duration vs need, 25% efficiency, 25% restorative (deep + REM) share. */
+    /**
+     * 0..100 night score: 60% how much of the need was slept, 20% efficiency, 20% restorative (deep + REM) share.
+     * Duration counts for more than the other parts and falls away faster than it rises, so a short night cannot score
+     * well just because the little sleep there was came in one unbroken piece: about 4 h 40 against an 8 h need scores
+     * in the 50s, 7 h in the mid 80s, and only a full night with good quality reaches the 90s.
+     */
     fun sleepScore(asleepMin: Double?, eff: Double?, deepMin: Double?, remMin: Double?, needMin: Int): Double? {
         if (asleepMin == null) return null
         val dur = Stats.clamp(asleepMin / needMin, 0.0, 1.0)
-        val effS = if (eff != null) Stats.clamp((eff - 70.0) / 25.0, 0.0, 1.0) else 0.8
+        val durS = dur * dur
+        val effS = if (eff != null) Stats.clamp((eff - 75.0) / 22.0, 0.0, 1.0) else 0.6
         val restorative = if (deepMin != null && remMin != null && asleepMin > 0)
-            Stats.clamp(((deepMin + remMin) / asleepMin) / 0.40, 0.0, 1.0) else 0.8
-        return 100.0 * (0.5 * dur + 0.25 * effS + 0.25 * restorative)
+            Stats.clamp(((deepMin + remMin) / asleepMin) / 0.45, 0.0, 1.0) else 0.6
+        return 100.0 * (0.6 * durS + 0.2 * effS + 0.2 * restorative)
     }
 
     // ---------- Stress ----------
